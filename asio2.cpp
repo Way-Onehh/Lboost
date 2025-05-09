@@ -31,34 +31,37 @@ int main() {
     = [&](const boost::system::error_code& error,asio::ip::tcp::socket socket) {
         int index = current_io_index % num_thread;
         auto socket_s = std::make_shared<asio::ip::tcp::socket>(std::move(socket)); 
-        char buf[1024]={0};
+        auto buf = std::make_shared<std::vector<char>>(1024);
+       
         std::function<void (const boost::system::error_code&,size_t )>do_read,do_write;
         do_write = [&,socket_s](const boost::system::error_code& error,size_t length){
             socket_s->close();
         };
 
-        do_read = [&,socket_s,buf](const boost::system::error_code& error ,size_t length) {
-            std::cout << "Received: " << buf << std::endl;
+        do_read = [&,index,socket_s,buf](const boost::system::error_code& error ,size_t length) {
+            std::cout << "Received: " << buf->data() << std::endl;
             char *p = "hello world";
-            memcpy((void*) buf,p,strlen(p));
-            asio::async_write(
-                *socket_s,
-                asio::buffer(buf,strlen(p)),
-                do_write
-            );
+            memcpy(buf->data(),p,strlen(p));
+            
+            asio::post(io_contexts[index],[&,socket_s,buf,do_read]()
+            {
+                asio::async_write(
+                    *socket_s,
+                    asio::buffer(*buf,strlen(p)),
+                    do_write
+                );
+            }
+        ); 
         };
 
-        // asio::post(io_contexts[index],
-        //     [socket_s,buf,do_read]() {
-        //         socket_s->async_read_some(
-        //             asio::buffer(buf,1024),
-        //             do_read
-        //         );
-        //     }
-        // );
-        socket_s->async_read_some(
-            asio::buffer(buf,1024),
-            do_read
+        asio::post(io_contexts[index],[&,socket_s,buf,do_read]()
+        {
+            asio::async_read(
+                *socket_s,
+                asio::buffer(*buf),
+                do_read
+            );
+        }
         );
         current_io_index++;
         acceptor.async_accept(handle_accept);
