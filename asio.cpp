@@ -37,8 +37,8 @@ int main()
         socket_ptr->async_read_some(asio::buffer(*buf_ptr),do_read);
         acceptor.async_accept(handle_accept);
     };
-    // 异步接受连接 
-    asio::ip::tcp::socket socket(io);
+
+    // 异步接受连接
     acceptor.async_accept(handle_accept);
     io.run();
     return 0;

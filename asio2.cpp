@@ -1,77 +1,133 @@
-//创立一对一的io_context和线程，然后使用io_context::run() 轮询处理事件。
-//使用一个io_context和一个线程，然后使用io_context来处理网络连接和数据交换。
-//使用post(io_context xxx) 轮询投递事件
-
-#include <boost/asio.hpp> 
-#include <thread>
+#include <boost/asio.hpp>
+#include <iostream>
 #include <vector>
 #include <memory>
-#include <iostream>
-#include <atomic>
-#include <functional>
-namespace asio = boost::asio;
-int main() {
-    // 初始化：根据CPU核心数创建io_context和线程 
-    int num_thread = std::thread::hardware_concurrency() * 2;
-    std::vector<asio::io_context> io_contexts(num_thread);
-    std::vector<std::thread> threads(num_thread);
-    std::vector<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>> works;
-    std::atomic<size_t> current_io_index{0}; // 轮询计数器 
+#include <thread>
+#include <algorithm>
 
-    for (int i = 0; i < num_thread; ++i) {
-        works.push_back(asio::make_work_guard(io_contexts[i]));
-        threads[i] = std::thread([&io_contexts, i]() {
-            io_contexts[i].run();
-        });
+using boost::asio::ip::tcp;
+
+class session : public std::enable_shared_from_this<session> {
+public:
+    session(tcp::socket socket) : socket_(std::move(socket)) {}
+
+    void start() {
+        do_read();
     }
-    asio::ip::tcp::acceptor acceptor(io_contexts[0], asio::ip::tcp::endpoint(asio::ip::tcp::v4(), 8080));
-    acceptor.listen();
 
-    std::function<void (const boost::system::error_code&,asio::ip::tcp::socket)>handle_accept 
-    = [&](const boost::system::error_code& error,asio::ip::tcp::socket socket) {
-        int index = current_io_index % num_thread;
-        auto socket_s = std::make_shared<asio::ip::tcp::socket>(std::move(socket)); 
-        auto buf = std::make_shared<std::vector<char>>(1024);
-       
-        std::function<void (const boost::system::error_code&,size_t )>do_read,do_write;
-        do_write = [&,socket_s](const boost::system::error_code& error,size_t length){
-            socket_s->close();
-        };
+private:
+    void do_read() {
+        auto self(shared_from_this());
+        socket_.async_read_some(boost::asio::buffer(data_),
+            [this, self](boost::system::error_code ec, std::size_t length) {
+                if (!ec) {
+                    std::cout << "Received: " << std::string(data_.data(), length) << std::endl;   
+                    do_write(length);
+                }
+            });
+    }
 
-        do_read = [&,index,socket_s,buf](const boost::system::error_code& error ,size_t length) {
-            std::cout << "Received: " << buf->data() << std::endl;
-            char *p = "hello world";
-            memcpy(buf->data(),p,strlen(p));
-            
-            asio::post(io_contexts[index],[&,socket_s,buf,do_read]()
-            {
-                asio::async_write(
-                    *socket_s,
-                    asio::buffer(*buf,strlen(p)),
-                    do_write
-                );
-            }
-        ); 
-        };
+    void do_write(std::size_t length) {
+        auto self(shared_from_this());
+        char * p = R"(HTTP/1.1 200 OK
+Content-Type: text/html; charset=UTF-8
+Content-Length: 13
+Connection: close
+Date: Fri, 21 Jun 2024 10:00:00 GMT
 
-        asio::post(io_contexts[index],[&,socket_s,buf,do_read]()
-        {
-            asio::async_read(
-                *socket_s,
-                asio::buffer(*buf),
-                do_read
-            );
+Hello, World!)";
+
+        boost::asio::async_write(socket_, boost::asio::buffer(p, strlen(p)),
+            [this, self](boost::system::error_code ec, std::size_t /*length*/) {
+                if (!ec) {
+                    do_read();
+                }
+            });
+    }
+
+    tcp::socket socket_;
+    std::array<char, 1024> data_;
+};
+
+void start_accept(tcp::acceptor& acceptor, std::vector<std::shared_ptr<boost::asio::io_context>>& workers) {
+    auto socket = std::make_shared<tcp::socket>(acceptor.get_executor());
+    acceptor.async_accept(*socket, [&, socket](boost::system::error_code ec) mutable {
+        if (!ec) {
+            // 获取原生句柄并释放当前socket的所有权
+            auto native_sock = socket->native_handle();
+            socket->release();
+
+            // 选择下一个worker（轮询方式）
+            static size_t next = 0;
+            auto& worker_io = *workers[next % workers.size()];
+            next++;
+
+            // 将任务派发到worker的io_context中
+            boost::asio::post(worker_io, [native_sock, &worker_io]() {
+                boost::system::error_code ec;
+                tcp::socket worker_socket(worker_io);
+                worker_socket.assign(tcp::v4(), native_sock, ec);
+                if (ec) {
+                    std::cerr << "Assign failed: " << ec.message() << std::endl;
+#ifdef _WIN32
+                    // 在Windows上，需要显式地关闭socket
+                    ::closesocket(native_sock);
+#else                 
+                    ::close(native_sock);
+#endif
+                    return;
+                }
+
+                // 创建会话并启动
+                std::make_shared<session>(std::move(worker_socket))->start();
+            });
         }
-        );
-        current_io_index++;
-        acceptor.async_accept(handle_accept);
-    };
-    acceptor.async_accept(handle_accept);
 
-    for (int i = 0; i < num_thread; ++i) {
-        threads[i].join();
-        works[i].reset();
+        // 继续接受新连接
+        start_accept(acceptor, workers);
+    });
+}
+
+int main() {
+    try {
+        const unsigned short port = 8080;
+        const int num_workers = 12;
+
+        // 主io_context用于接受连接
+        boost::asio::io_context main_io;
+        auto main_work = boost::asio::make_work_guard(main_io);
+        tcp::acceptor acceptor(main_io, tcp::endpoint(tcp::v4(), port));
+
+        // 创建工作io_context和线程
+        std::vector<std::shared_ptr<boost::asio::io_context>> worker_ios;
+        std::vector<std::thread> worker_threads;
+        std::vector<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>> worker_work;
+
+        for (int i = 0; i < num_workers; ++i) {
+            auto io = std::make_shared<boost::asio::io_context>();
+            worker_ios.push_back(io);
+            worker_work.emplace_back(boost::asio::make_work_guard(*io));
+            worker_threads.emplace_back([io] {
+                io->run();
+                std::cout << "Worker thread stopped" << std::endl;
+            });
+        }
+
+        // 开始接受连接
+        start_accept(acceptor, worker_ios);
+
+        // 运行主io_context（阻塞）
+        main_io.run();
+
+        // 停止工作线程（需先停止io_context）
+        for (auto& io : worker_ios) {
+            io->stop();
+        }
+        for (auto& t : worker_threads) {
+            if (t.joinable()) t.join();
+        }
+    } catch (std::exception& e) {
+        std::cerr << "Exception: " << e.what() << std::endl;
     }
-       
     return 0;
 }
