@@ -2,7 +2,7 @@
 #include <boost/asio/ssl.hpp> 
 #include <iostream>
 #include <fstream>
-#include <boost/json/src.hpp>
+#include <boost/json.hpp>
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -27,7 +27,11 @@ auto main()->int {
  
         // 构造HTTP请求 
         std::string json_str;
-        std::ifstream file("../config.json");   // 默认以文本模式打开 
+#ifdef _WIN32
+        std::ifstream file("../../config.json", std::ios::binary);
+#else
+        std::ifstream file("../config.json");
+#endif
         if (!file.is_open())  {
             std::cerr << "无法打开文件" << std::endl;
             return 1;

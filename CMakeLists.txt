@@ -8,7 +8,7 @@ endif()
 
 if(WIN32)
 set(BOOST_ROOT "D:/My_SDK/boost")
-find_package(Boost REQUIRED json redis) 
+find_package(Boost REQUIRED json) 
 else()
 find_package(Boost REQUIRED json)
 find_package(OpenSSL REQUIRED)
@@ -34,7 +34,7 @@ target_include_directories(udpC PUBLIC ${Boost_INCLUDE_DIR})
 
 add_executable(httpC httpC.cpp)
 target_include_directories(httpC PUBLIC ${Boost_INCLUDE_DIR} "D:/OpenSSL-Win64/include")
-
+target_link_libraries(httpC PUBLIC Boost::json Boost::container ) 
 if(WIN32)
 target_link_libraries(httpC PUBLIC "D:/OpenSSL-Win64/lib/VC/x64/MD/libssl_static.lib"  "D:/OpenSSL-Win64/lib/VC/x64/MD/libcrypto_static.lib" crypt32.lib)
 else()
@@ -47,11 +47,6 @@ target_include_directories(httpS PUBLIC ${Boost_INCLUDE_DIR})
 add_executable(api api.cpp)
 target_include_directories(api PUBLIC ${Boost_INCLUDE_DIR})
 
-if(WIN32)
-add_executable(redis redis.cpp)
-target_include_directories(redis PUBLIC ${Boost_INCLUDE_DIR} "D:/OpenSSL-Win64/include")
-target_link_libraries(redis PUBLIC Boost::redis "D:/OpenSSL-Win64/lib/VC/x64/MD/libssl_static.lib"  "D:/OpenSSL-Win64/lib/VC/x64/MD/libcrypto_static.lib" crypt32.lib)
-endif()
 
 
 
