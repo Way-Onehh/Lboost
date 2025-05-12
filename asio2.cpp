@@ -91,7 +91,7 @@ void start_accept(tcp::acceptor& acceptor, std::vector<std::shared_ptr<boost::as
 int main() {
     try {
         const unsigned short port = 8080;
-        const int num_workers = 12;
+        const int num_workers = 4;
 
         // 主io_context用于接受连接
         boost::asio::io_context main_io;
